@@ -7,20 +7,22 @@ title, fitness for a particular purpose, non-infringement, or that such code is 
 In no event will Snap Inc. be liable for any damages or losses of any kind arising from the sample code or your use thereof.
 """
 
+import glob
+import json
 import os
-from skimage import io, img_as_float32
-from skimage.color import gray2rgb
-from skimage.transform import resize
-
-from sklearn.model_selection import train_test_split
-from imageio import mimread
+from functools import partial
 
 import numpy as np
-from torch.utils.data import Dataset
 import pandas as pd
+from imageio import mimread
+from skimage import img_as_float32, io
+from skimage.color import gray2rgb
+from skimage.transform import resize
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset
+from torchvision.io import read_video as t_read_video
+
 from augmentation import AllAugmentationTransform
-import glob
-from functools import partial
 
 
 def read_video(name, frame_shape):
@@ -71,6 +73,63 @@ def read_video(name, frame_shape):
         raise Exception("Unknown file extensions  %s" % name)
 
     return video_array
+
+
+
+class TalkingHeadVideosDataset(Dataset):
+    """
+    Dataset of videos, each video can be represented as:
+      - '.mp4' or '.gif'
+      - folder with all frames
+    """
+
+    def __init__(
+        self,
+        root_dir,
+        n_videos_per_bin=512,
+        frame_shape=(256, 256, 3),
+        id_sampling=True,
+        is_train=True,
+        augmentation_params={
+            "flip_param": {"horizontal_flip": True, "time_flip": True},
+            "jitter_param": {"brightness": 0.1, "contrast": 0.1, "saturation": 0.1, "hue": 0.1},
+        },
+        debug=False,
+    ):
+        self.root_dir = root_dir
+        assert frame_shape[0] == frame_shape[1]
+        self.frame_shape = tuple(frame_shape)
+        self.is_train = is_train
+        assert self.is_train is False, "Please use webdataset for training set"
+
+        self.split = 'val'
+        self.json_file = os.path.join(self.root_dir, f'{self.split}/cropped_clips_256_names.json')
+        self.video_root = os.path.join(self.root_dir, self.split, 'cropped_clips_256')
+        with open(self.json_file, 'r') as stream:
+            self.videos = json.load(stream)['videos']
+        self.transform = None
+
+    def __len__(self):
+        return len(self.videos)
+
+    def __getitem__(self, idx):
+        video_name = self.videos[idx]
+        # torchvision read_video
+        video_array = t_read_video(os.path.join(self.video_root, video_name))[0]
+        num_frames = video_array.size(0)
+
+        frame_ids = [i for i in range(num_frames)]
+        video_array = video_array[frame_ids]
+
+        if self.transform is not None:
+            video_array = self.transform(video_array)
+
+        video = video_array.permute(0, 3, 1, 2).float() / 255.0
+        out = video
+
+        ret_val = (out, video_name)
+
+        return ret_val
 
 
 class FramesDataset(Dataset):
